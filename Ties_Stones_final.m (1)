@@ -1,0 +1,450 @@
+% Stones and Ties segmentation algorithm, 
+% The algorithm is composed of two main parts, one for the ties
+% segmentation and the other part for the stones segmentation. The
+% algorithm is broken to 
+% 1- Preprocessing steps.
+% 2- Ties segmentation.
+% 3- Stones segmentation
+% 4- Psudo-coloring and outputs representation.
+% 
+% The preprocessing phase consists of many steps that performs enhancement
+% and equalization of image contrast to help segment the ties and the
+% stones later. The tie segmentation is done through a process called the
+% entropy filtration which basically detects the local texture features /
+% patterns to help flag out the stones portion from the ties portion of the
+% image. This texture features image is then segmented and the ties are
+% extracted from it. The stones segmentation is done through adapitive
+% segmetation process which tends binarize the stones from the background.
+% Finally, a psudo-coloring process is performed to help visualize the
+% outputs.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Step 1: Preprocessing step:
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% Starting off with refreshing figures and memory
+clc, clear, close all
+
+
+tic %For the elpased time 
+
+% Reading the image 
+I = imread('Example3 (1)_cropped.jpg'); 
+[m, n, k] = size(I);  %getting the dimensions of the images
+
+
+% Sometimes images are read as 3 colors channels, this will handle
+% converting the images to gray
+if k == 3
+   I = rgb2gray(I); 
+end
+
+% Getting the transpose of the image if it was oriented vertically, this
+% will filp the image horizontally, |IMRESIZE(I,90)| could also be done,
+% however, transposing has less time consumption
+if n * 3 < m
+    I = I';
+end    
+
+I_backup = I; %This is backup image because variable I is altered many times
+
+% The start of the preprocessing steps, here it performs adaptive histogram
+% equalisation to enhance the contrast and remove the haze from the image
+I_pre = rescale(imfilter(adapthisteq(I, 'numTiles', [64, 64], 'clipLimit', 0.7)...
+    , fspecial('gaussian', [3, 3]))); % c*log(1+I)        
+% Continuation of the preprocessung steps
+I_pre2 = rescale(medfilt2(histeq(I_pre), [7, 7]));
+
+
+display_imgs = 0;
+% You can uncomment these if you want to visualise the output at this point
+if display_imgs
+    figure, imshow(rescale(I))
+    figure, imshow(I_pre)
+end
+%%
+
+% This process is to get to detect the main rail from the image which gets
+% removed the image, the rail coordinates are also useful and used later
+I_seg1 = rescale(I) > 0.5;
+I_seg2 = imopen(I_seg1, strel('line', 200, 0));
+[rx, ~] = find(imdilate(I_seg2, ones(3)));
+
+rail_img = zeros(size(I));
+rail_img(rx, 3:end-3) = 1;
+rail_img = imclose(bwareafilt(imclearborder(rail_img > 0.5), [10*n, inf]), ...
+    strel('disk', 200));
+
+if display_imgs
+    figure, imshow(rail_img)
+end
+%%
+% The rail image is reset at this point from the preprocessed image
+I = I_pre2 .* not(imdilate(rail_img, strel('disk', 50)));
+
+% Uncomment to show this image
+if display_imgs
+    figure, imshow(I)
+end
+%%
+% The upcoming steps is done to further enhance the image with
+% morphological operations which tends to smooth out the input image. These
+% steps are critical for the texture features extraction, the process
+% wouldn't have worked without them
+
+% Creating the structure element for the morphological steps
+se = strel('disk',7);
+Io = imopen(I,se);
+
+% The first morphological step is called openning by reconstrction which is
+% an openning process (here I used erosion) followed by a reconstruction
+% process.
+Ie = imerode(I,se);
+Iobr = imreconstruct(Ie,I);
+
+if display_imgs
+    figure, imshow(Iobr)
+title('Opening-by-Reconstruction')
+end
+%% 
+% Following the opening with a closing can remove the dark spots and stem
+% marks. Compare a regular morphological closing with a
+% closing-by-reconstruction.
+
+Ioc = imclose(Io,se);
+
+if display_imgs
+    figure, imshow(Ioc)
+    title('Opening-Closing')
+end
+
+% Following the openning by reconstruction a closing by reconstruction
+% process
+Iobrd = imdilate(Iobr,se);
+Iobrcbr = imreconstruct(imcomplement(Iobrd),imcomplement(Iobr));
+Iobrcbr = imcomplement(Iobrcbr);
+
+if display_imgs
+    figure, imshow(Iobrcbr)
+    title('Opening-Closing by Reconstruction')
+end
+I = rescale(Iobrcbr);
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Step 2: Ties Segmentation algorithm:
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Creating Texture Image  
+% The function  |entropyfilt| creates a texture image. It  returns an array
+% where each output pixel contains the entropy value of the
+% f_size-by-f_size neighborhood around the corresponding pixel in the input
+% image |I|. Entropy is a statistical measure of randomness.
+% 
+% I have also used |stdfilt| and |rangefilt| to achieve similar
+% segmentation results. I then later used combination of two texture
+% features images to get better image
+
+% Neighbourhood mask size 
+f_size = 15;
+E = rescale(entropyfilt(I, true(f_size)));
+S = stdfilt(I,ones(f_size));
+R = rangefilt(I,ones(f_size));
+%%
+
+% Use |rescale| to rescale the texture images |E| and |S| so that pixel values 
+% are in the range [0, 1] as expected of images of data type |double|.
+Eim = rescale(E);
+Sim = rescale(S);
+Rim = rescale(R);
+
+% Here I combined the range image with the entropy image
+Eim2 = rescale(imadjust(rescale(imadjust(Rim .* Eim))));
+
+% Display the three texture images in a montage.
+
+if display_imgs
+    figure, montage({Eim,Sim,Rim, Eim2},'Size',[2 2],'BackgroundColor','w',"BorderSize",20)
+    title('Texture Images Showing Local Entropy, Local Standard Deviation, and Local Range')
+end
+% 
+% Threshold the rescaled image |Eim2| to segment the textures. A threshold
+% value of 0.5 is selected because it is roughly the intensity value of
+% pixels along the boundary between the textures.
+BW1 = Eim2 > 0.5;
+
+if display_imgs
+    figure, imshow(BW1)
+    title('Thresholded Texture Image')
+end
+% Perfrming area openeing process to filter out the small objectss
+BWao = bwareaopen(BW1, 500);
+
+if display_imgs
+    figure, imshow(BW1)
+    figure, imshow(BWao)
+    title('Area-Opened Texture Image')
+end
+% Some morphological operations to enhance the segmented image
+nhood = ones(9);
+closeBWao = imclose(BWao,nhood);
+
+
+% This part of the algorithm handles the identification of the boundaries
+% of the ties, if you saw "closeBWao" image you'll notice gaps in the ties
+% locations, these upcoming steps tend to idenfy the gap that the each tie
+% make
+
+% The process start by thaking the mean value of each column, locations
+% with stones will tend to have high mean and locations with ties tend to
+% have low mean value due to the gap the tie makes
+ss = mean(closeBWao(round(m/2):m, :));
+
+% Smoothing the results with moving average filter
+trend = movmean(ss, 200);
+
+% Locating the gap as 0.95 from the mean value, this is done by trials and
+% observation
+ss2 = trend;
+ss2(ss2 < 1.0 * 0.95 * mean(ss2)) = 2*max(ss);
+
+% Again, smoothing the results this time with moving median filter
+ss3 = movmedian(ss2, 101) > max(ss);
+
+% Next steps to locate the indecies of the 
+inds = find(diff(ss3, 2) > 0.25 * max(ss3));
+inds = [inds, inds+1, inds+2];
+
+% Now creating a binary mask image for the locations from the locations of
+% the indices
+mask_img = zeros(size(closeBWao), 'logical');
+mask_img(:, ss3) = 1;
+closeBWao2 = closeBWao;
+closeBWao2(:, inds) = 1;
+
+if display_imgs
+    figure, plot(ss2), figure, plot(ss3)%, figure, plot(diff(ss3, 2) > 0.5 * max(ss3))
+    figure, imshow(closeBWao2)
+    title('Closed Texture Image')
+end
+%%
+% This part of the code handles the extraction of the clips, it uses active
+% contour segmentation from locations that are close to the rail image
+% % This part is obsolete, however I kept it for reference.
+% 
+% clip_img = Eim2 .* imdilate(rail_img, strel('disk', 75)) - ...
+%     imdilate(rail_img, strel('disk', 50));
+% 
+% clip_img2 = imopen(activecontour(Eim2, clip_img > 0.1, 200), ...
+%      strel('disk', 5)) .* ~imdilate(rail_img, strel('disk', 1));
+% 
+% clip_img3 = activecontour(I_pre, clip_img2, 25); 
+% % figure, imshow(clip_img2), impixelinfo
+
+% I_clip_img = I;
+% I_clip_img(:, mean(clip_img3) > 0) = 255;
+
+% figure, imshowpair(I, I_clip_img), impixelinfo
+% figure, plot(mean(clip_img3))
+% mask = imfill(closeBWao,'holes');
+
+
+
+% This process is to get better image of the ties with partially filled
+% stones
+stones_filled = bwfill(imclose(bwareaopen(imfill(closeBWao,'holes'), ...
+    500), ones(50)), 'holes');
+% figure, imshow(mask);
+% title('Mask of Bottom Texture')
+
+
+% This part of the algorithm is used to enhance the location of the
+% perimeter, it create "cuts" at the locations of whatever strong vertical
+% boundary image located within the tie region
+cuts = imdilate(imopen((I < 0.1 | I > 0.95) .* mask_img, strel('line', 300, 90)), ...
+    strel('disk', 2));
+[~, cy] = find(cuts);
+mask_img(:, cy) = 0;
+
+% After creating the cuts, the result ties are then filtered out according
+% to the size (width) of the tie
+mask_props = regionprops(mask_img);
+mask_boxes = cat(1, mask_props.BoundingBox);
+mask_img2 = ismember(bwlabel(mask_img), find(mask_boxes(:, 3) > 150));
+mask_img3 = mask_img2 .* ~imdilate(rail_img, strel('disk', 100)) > 0.5;
+tie_stone = mask_img3 .* stones_filled .* I_pre > 0.1;
+
+%%  
+% Obtaining the ties information as struct, starting off with an empty
+% struct then fill it out with all necessary inforamtion as stated in the
+% requirements
+tie_props = struct;
+tie_props.number = [];
+tie_props.h_center = [];
+tie_props.obs_area = [];
+
+
+tie_number = unique(bwlabel(mask_img3)) ;
+tie_rprops = regionprops(mask_img3);
+tie_boxes = cat(1, tie_rprops.BoundingBox);
+tie_centers = cat(1, tie_rprops.Centroid);
+h_centers = round(tie_centers(:, 1));
+
+for i = 1:length(tie_rprops)
+    tie_props(i).number = i;
+    tie_props(i).h_center = h_centers(i);
+    
+    this_tie = imcrop(mask_img3, tie_boxes(i, :));
+    this_filled_tie = imcrop(tie_stone, tie_boxes(i, :));
+    
+%     % figure, imshowpair(this_tie, this_filled_tie, 'montage')
+    
+    tie_props(i).obs_area = 1 - (numel(find(this_filled_tie)) /...
+                                 numel(find(this_tie)));
+end
+
+%%
+% Obtaining a psudo-colored image for the ties
+h = figure;
+ov1 = labeloverlay(I_backup, tie_stone, 'Colormap', [1, 0, 0], ...
+    'Transparency', 0.5);
+ov2 = labeloverlay(ov1, (mask_img3 .* ~tie_stone) > 0.5, ...
+    'Colormap', [0, 1, 0], 'Transparency', 0.5);
+ov3 = labeloverlay(ov2, imdilate(imopen(bwperim(mask_img3), ...
+    strel('line', 100, 90)), ones(25)) > 0.5, 'Colormap', [0, 1, 1], ...
+    'Transparency', 0);
+figure, imshow(ov3)
+
+
+% Printing text information in the ties image
+for i = 1:length(tie_rprops)
+   text(tie_centers(i, 1), tie_centers(i, 2) - 150, num2str(i), 'color', 'yellow') 
+   text(tie_centers(i, 1), tie_centers(i, 2), num2str(round(tie_centers(i, 1))) ...
+       , 'color', 'yellow') 
+  text(tie_centers(i, 1), tie_centers(i, 2) + 150, num2str(round(tie_props(i).obs_area, 3)) ...
+   , 'color', 'yellow') 
+end
+
+text(1,m + 200, sprintf('1st: Tie Number\n2nd:Horizontal coordinate (in pixels)')) 
+text(1,m + 250, sprintf('\n\n3rd:Approx. obstructed area ')) 
+disp('Time elapsed for ties segmentation')
+toc
+
+
+
+
+% END OF TIE ALGORITHM
+%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Step 3: Stones Segmentation algorithm:
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%
+% You can use this to toggle between the threshold algorithm and the active
+% contour, I'm mainly using the threshold and I strongly recommend that you
+% leave it to 1
+is_threshold = 1;
+
+
+% getting the inital stone image
+stone_img1 = Iobr .* ~(mask_img3 .* ~tie_stone) .* ...
+    ~imdilate(rail_img, strel('disk', 100));
+
+if is_threshold
+    % The Stone segmentation is done by adaptive binary threshold
+    thresh = 0.5;
+    
+    % Obtaining the adaptive binary threshold
+    T1 = adaptthresh(stone_img1, thresh, 'NeighborhoodSize', 121);
+    
+    % Binarizing the stone image
+    stone1 = imbinarize(stone_img1, T1);
+    stone2 = stone1 & ~imdilate(bwfill(edge(stone_img1, 'canny', 0.4), ...
+        'holes'), ones(3));
+    stone3 = bwareafilt(imopen(stone2, ones(3)), [500, inf]);
+
+    
+    if display_imgs
+        figure, imshowpair(I_pre2, stone3)
+        figure, imshow(stone3)
+    end
+else
+    disp('Time elapsed for stones segmentation using the threshold method')
+    toc
+%     
+%     Here the stone segmentation using the active contour, this is the part
+%     that takes around 15 mins and thus why removed
+%     You can consider this part as obsolete
+    tic
+    stone_init = imregionalmax(Io) .* Io > 0.5;
+    stone3 = activecontour(I_pre2, aa,240) .* ~imdilate(rail_img, strel('disk', 100));
+    disp('Time elapsed for stones segmentation using the active contour method')
+    toc
+    figure, imshowpair(I_pre2, stone3)
+end
+
+
+% Here I'm adding the properties (features) filtration, I calculated two
+% properies, namely, the solidity and the aspect ratio. 
+% The solidity measures how "full" the object is, I mainly targeted the
+% rings with this, however, there were some stones removed accidently as
+% well. I have also calculated the aspect ratio given from the major axis
+% length and the minor axis length of each stone detected.
+% These values are all normalized, and you can tweak them yourself to see
+% the effect
+props = regionprops(stone3, 'Solidity', 'MajorAxisLength', 'MinorAxisLength');
+solildity = [props.Solidity];
+l_major_axis = [props.MajorAxisLength];
+l_minor_axis = [props.MinorAxisLength];
+
+% This new |SDIV| function guarentees that we always get a fraction
+% division, because the major and minor axis lengths are affected with the
+% orientation of the stone which something we can't control
+aspect_ratio = sdiv(l_minor_axis, l_major_axis);
+
+filt_solids = solildity >= 0.3;
+filt_aspect = aspect_ratio >= 0.1;
+
+stone4 = ismember(bwlabel(stone3), find(filt_solids));
+stone5 = ismember(bwlabel(stone4), find(filt_aspect));
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Step 4: Psudocoloring:
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Creating the psudo-color figure for the stone
+
+% This portion handle creating a color bar and then redistribute the stones
+% over this color bar according to their area, 
+
+% Calculating the area and the centroid
+stone_props = regionprops(stone5);
+st_areas = [stone_props.Area];
+st_centers = cat(1, stone_props.Centroid);
+
+% Creating the color bar
+colors = jet(max(st_areas));
+colors(:, 2) = 0;
+
+% redistributing the stones on the color bar based on their areas
+colors2 = colors(st_areas, :);
+
+
+% Initializing the stone image from the ties colored image to have one
+% image notated image
+st_ov1 = labeloverlay(ov3, imdilate(bwperim(stone3), ones(2)),...
+    'Colormap', [1, 1, 0], 'Transparency', 0.1);
+
+st_ov2 = st_ov1;
+for i = 0:0.01:0.5
+    st_ov2 =  insertMarker(st_ov2, st_centers + i, '*', 'color', 'white', 'size', 10);
+end
+% st_ov3 = label2rgb(bwlabel(stone3), colors2, [0, 0, 0]);
+st_ov3 = labeloverlay(st_ov2, bwlabel(stone5), 'Colormap', colors2, ...
+    'Transparency', 0.5);
+figure, subplot(2,1,1), imshow(I), subplot(2, 1, 2), imshow(st_ov3)
+% figure, imshow(st_ov3)
